@@ -10,20 +10,24 @@ import re
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher, types
+from aiogram.dispatcher.filters.state import StatesGroup, State
 from aiogram.types import InputFile
 from aiogram import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-import aiogram.utils.markdown as fmt
-
+from aiogram.dispatcher import FSMContext
+from aiogram.types import ContentType
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 import numpy as np
+from aiogram.types import CallbackQuery
 
 import schedule
 
 import invest_engine
+import private.manage_users as manage_users
 # import aiosqlite
 
 
-__version__ = '0.0.0.1'
+__version__ = '0.0.0.2'
 
 
 os.system('clear')
@@ -51,12 +55,19 @@ except Exception as e:
 
 
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher(bot, storage=MemoryStorage())
 
 
 # Включение логгирования
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
 # dp.middleware.setup(LoggingMiddleware())
+
+
+async def check_user_in_db(message):
+    user_id = message.from_user.id
+    first_name = message.chat.first_name
+    last_name = message.chat.last_name
+    user_name = message.chat.username
 
 
 # ============================================================================
@@ -68,7 +79,13 @@ async def start_message(message: types.Message):
         "/// DESIGN by </b>KOZAK\n",
         parse_mode='HTML'
     )
-    await asyncio.sleep(1)
+
+    user_id = message.from_user.id
+    first_name = message.chat.first_name
+    last_name = message.chat.last_name
+    user_name = message.chat.username
+    await manage_users.check_user_in_db(user_id, first_name, last_name, user_name)
+
     kb = [
         [
             types.KeyboardButton(text="Фондовый рынок"),
@@ -99,44 +116,93 @@ async def start_message(message: types.Message):
         reply_markup=keyboard, parse_mode='HTML')
 
 
-stock_market_message = {}
+@dp.message_handler(text='Главная')
+@dp.message_handler(commands=['menu'])
+async def main_func(message: types.Message):
+    btn = [
+        [
+            types.KeyboardButton(text="Мои финансы"),
+            types.KeyboardButton(text="Фондовый рынок")
+        ],
+        [
+            types.KeyboardButton(text="Главная")
+        ]
+    ]
+
+    keyboard = types.ReplyKeyboardMarkup(keyboard=btn, resize_keyboard=True, one_time_keyboard=True)
+    await message.answer(
+        "Вы на главной", reply_markup=keyboard, parse_mode='HTML')
 
 
-async def update_message(message: types.Message, new_text: str):
-    await message.edit_text(new_text, parse_mode='HTML')
+# Состояния
+class StockMarketState(StatesGroup):
+    InStockMarket = State()  # Состояние, когда пользователь находится в разделе Фондовый рынок
+
+
+class CompanyInfoState(StatesGroup):
+    ChoosingCompany = State()   # Состояние, когда пользователь находится в разделе О компании
+
+
+async def update_message(message: types.Message, new_text: str, keyboard):
+    await message.edit_text(new_text, reply_markup=keyboard, parse_mode='HTML')
 
 
 def template_stock_market_message(_market_status):
     return f"<b>ФОНДОВЫЙ РЫНОК</b>\n\n{_market_status}"
 
 
+USER_STATE = {}
+work_status = "work_status"
+
+
 @dp.message_handler(text='Фондовый рынок')
-async def stock_market(message: types.Message):
+async def stock_market(message: types.Message, state: FSMContext):
+    await StockMarketState.InStockMarket.set()  # Установка состояния
+
     market_status = await invest_engine.get_market_info()
 
-    sent_message = await bot.send_message(
-        message.from_user.id, template_stock_market_message(market_status), parse_mode='HTML')
+    keyboard = InlineKeyboardMarkup()
+    for company in market_status["data_companies"]:
+        # Создайте кнопку, внутри которой будет информация о компании
+        button_text = f"{company[0]}"
+        company_info_button = InlineKeyboardButton(text=button_text, callback_data=f"{company[0]}")
 
-    while True:
+        # Добавьте кнопку в объект InlineKeyboardMarkup
+        keyboard.add(company_info_button)
+
+    sent_message = await bot.send_message(
+        message.from_user.id, template_stock_market_message(market_status['text_info']),
+        reply_markup=keyboard, parse_mode='HTML')
+
+    if work_status is not True:
+        USER_STATE[work_status] = True
         await asyncio.sleep(invest_engine.price_update_interval)
 
-        market_info = await invest_engine.get_market_info()
-        print('// market_info:', market_info)
-        print(template_stock_market_message(market_info))
-        await update_message(sent_message, template_stock_market_message(market_info))
+        while True:
+            await asyncio.sleep(invest_engine.price_update_interval)
+
+            market_inform = await invest_engine.get_market_info()
+            print('//// market_info:', market_inform)
+
+            try:
+                await update_message(sent_message, template_stock_market_message(market_inform['text_info']), keyboard)
+            except Exception:
+                pass
+
+            await state.update_data(sent_message_id=sent_message.message_id)
+
+
+@dp.message_handler(text='Мои финансы')
+async def stock_market(message: types.Message):
+    pass
 
 
 if __name__ == '__main__':
-    # Создание и запуск цикла для работы бота и обновления цен
-    loop = asyncio.get_event_loop()
+    executor.start_polling(dp, skip_updates=True)
 
-    # Запускаем функцию работы биржи в фоновом режиме
-    stock_exchange_task = loop.create_task(invest_engine.work_of_the_stock_exchange())
-    # Запускаем бота
-    bot_task = loop.create_task(executor.start_polling(dp, skip_updates=True))
-
-    # Запуск event loop для выполнения обеих задач
-    loop.run_until_complete(asyncio.gather(stock_exchange_task, bot_task))
-
-    while True:
-        loop.run_until_complete(invest_engine.work_of_the_stock_exchange())
+    # while True:
+    #     asyncio.sleep(invest_engine.price_update_interval)
+    #     market_info = invest_engine.get_market_info()
+    #     print('// market_info:', market_info)
+    #
+    #     asyncio.run(stock_exchange_task)

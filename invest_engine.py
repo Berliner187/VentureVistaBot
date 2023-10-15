@@ -12,7 +12,7 @@ import asyncio
 
 
 # Инициализация и настройка базы данных
-engine = create_engine('sqlite:///companies.db', echo=True)  # Здесь 'companies.db' - это имя файла базы данных
+engine = create_engine('sqlite:///companies.db', echo=False)
 Base = declarative_base()
 
 
@@ -58,6 +58,7 @@ Session = sessionmaker(bind=engine)
 session = Session()
 
 
+START_COMPANY_PRICES = {}
 COMPANY_PRICES = {}
 
 
@@ -69,7 +70,7 @@ open_time = datetime.now(moscow_tz).replace(hour=10, minute=0, second=0, microse
 start_time = open_time + timedelta(seconds=price_update_interval)
 
 # Время окончания моделирования (19 вечера по московскому времени)
-end_time = datetime.now(moscow_tz).replace(hour=19, minute=0, second=0, microsecond=0)
+end_time = datetime.now(moscow_tz).replace(hour=23, minute=0, second=0, microsecond=0)
 
 # Максимальное изменение цены в одном шаге
 max_price_change = 5.0
@@ -108,24 +109,41 @@ def format_timedelta(td):
 async def get_market_info():
     current_time = datetime.now(moscow_tz)
     print(current_time)
-    buffer_prices = {}
+
     if start_time <= current_time <= end_time:
-        # Получаем информацию о всех компаниях
+        # Получаем информацию обо всех компаниях
         all_companies = session.query(Company).all()
 
         response = ''
+        data_companies = []
         # Выводим информацию о каждой компании
+        await work_of_the_stock_exchange()
+
         for company in all_companies:
-            await work_of_the_stock_exchange()
 
-            print(f"{company.name} - ({company.current_price:.2f})")
-            response += f"{company.name} - ({company.current_price:.2f})\n"
+            if company.name not in START_COMPANY_PRICES:
+                START_COMPANY_PRICES[company.name] = company.current_price
 
-        response += f'\n\n[{current_time.strftime("%Y-%m-%d %H:%M:%S")}]'
+            print(f"{company.name} -- ({company.current_price:.2f})")
+            delta_price = round(company.current_price - START_COMPANY_PRICES[company.name], 2)
+            if delta_price > 0:
+                delta_price = f'⬆️+{delta_price} (+{round(delta_price / START_COMPANY_PRICES[company.name] * 100, 2)}%)'
+            else:
+                delta_price = f'⬇️{delta_price} ({round(delta_price / START_COMPANY_PRICES[company.name] * 100, 2)}%)'
+            response += f"{company.name}: {company.current_price:.2f}\n{delta_price}\n\n"
+            data_companies.append([company.name, company.current_price])
 
-        return response
+        response += f'\n[{current_time.strftime("%Y-%m-%d %H:%M:%S")}]'
+        return {"text_info": response, "data_companies": data_companies}
     else:
         time_until_open = start_time - current_time
         close_message = f"\n<b>Биржа закрыта</b>\n\nОткроется через {format_timedelta(time_until_open)}"
         print(close_message)
-        return close_message
+        return {"text_info": close_message}
+
+
+async def about_company(company_name):
+    matching_companies = session.query(Company).filter(Company.name == company_name).all()
+    # Проходим по выбранным компаниям и выводим информацию о них
+    for company in matching_companies:
+        print(f"Ticker: {company.ticker}\nFullname: {company.name}\n Price: {company.current_price}")
