@@ -24,17 +24,19 @@ import schedule
 
 import invest_engine
 import private.manage_users as manage_users
-# import aiosqlite
 
 
-__version__ = '0.0.0.2'
+__version__ = '0.0.1.0'
 
 
 os.system('clear')
 print('=============== BOT aiogram START ===================')
 print(f'---------------- {__version__} ---------------------')
 print("""
-    Venture Vista
+     _  _  ____  _  _  ____  __  __  ____  ____    _  _  ____  ___  ____   __   
+    ( \/ )( ___)( \( )(_  _)(  )(  )(  _ \( ___)  ( \/ )(_  _)/ __)(_  _) /__\  
+     \  /  )__)  )  (   )(   )(__)(  )   / )__)    \  /  _)(_ \__ \  )(  /(__)\ 
+      \/  (____)(_)\_) (__) (______)(_)\_)(____)    \/  (____)(___/ (__)(__)(__)
 """)
 print('==================== Venture Vista ==================')
 
@@ -63,13 +65,6 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 # dp.middleware.setup(LoggingMiddleware())
 
 
-async def check_user_in_db(message):
-    user_id = message.from_user.id
-    first_name = message.chat.first_name
-    last_name = message.chat.last_name
-    user_name = message.chat.username
-
-
 # ============================================================================
 # ------------------------- ПОЛЬЗОВАТЕЛЬСКИЕ КОМАНДЫ -------------------------
 @dp.message_handler(commands=['start'])
@@ -81,10 +76,12 @@ async def start_message(message: types.Message):
     )
 
     user_id = message.from_user.id
-    first_name = message.chat.first_name
-    last_name = message.chat.last_name
-    user_name = message.chat.username
-    await manage_users.check_user_in_db(user_id, first_name, last_name, user_name)
+    first_name = message.from_user.first_name
+    last_name = message.from_user.last_name
+    username = message.from_user.username
+
+    print(user_id, first_name, last_name, username)
+    manage_users.check_user_in_db(user_id=user_id, first_name=first_name, last_name=last_name, username=username)
 
     kb = [
         [
@@ -102,18 +99,13 @@ async def start_message(message: types.Message):
 
     url_kb = InlineKeyboardMarkup(row_width=3)
     url_1 = InlineKeyboardButton(text='☎️Поддержка', url='https://t.me/schneller_los')
-    url_more = InlineKeyboardButton(text='✱Больше', callback_data='more_info_callback')
-    url_2 = InlineKeyboardButton(text='🔛Промо', url='https://dribbble.com/shots/22302443-Taxi-Watcher-Y-Logo-Design-Yandex-Taxi')
-    url_3 = InlineKeyboardButton(text='❓Часто задаваемые вопросы', url='https://telegra.ph/FAQ-08-27-5')
-    url_main = InlineKeyboardButton(text='📰Инструкция', callback_data='send_instruction_callback')
-    url_start = InlineKeyboardButton(text='🚀Начать', callback_data='set_address_callback')
-    url_kb.add(url_1, url_more)
-    url_kb.add(url_3)
-    url_kb.add(url_main, url_start)
+    url_2 = InlineKeyboardButton(text='🔛Промо', url='https://dribbble.com/kozak_developer')
+    url_kb.add(url_1)
+    url_kb.add(url_2)
 
     await message.answer(
         "<b>Venture</b> <i>Vista</i>.\n\n",
-        reply_markup=keyboard, parse_mode='HTML')
+        reply_markup=url_kb, parse_mode='HTML')
 
 
 @dp.message_handler(text='Главная')
@@ -137,10 +129,16 @@ async def main_func(message: types.Message):
 # Состояния
 class StockMarketState(StatesGroup):
     InStockMarket = State()  # Состояние, когда пользователь находится в разделе Фондовый рынок
+    SentMessageId = State()  # Состояние для хранения ID отправленного сообщения
+    WaitingForAmount = State()
 
 
 class CompanyInfoState(StatesGroup):
     ChoosingCompany = State()   # Состояние, когда пользователь находится в разделе О компании
+
+
+class StateWorkStockExchange(StatesGroup):
+    pass
 
 
 async def update_message(message: types.Message, new_text: str, keyboard):
@@ -156,53 +154,98 @@ work_status = "work_status"
 
 
 @dp.message_handler(text='Фондовый рынок')
-async def stock_market(message: types.Message, state: FSMContext):
-    await StockMarketState.InStockMarket.set()  # Установка состояния
+async def stock_market_start(message: types.Message):
+    state = dp.current_state(chat=message.chat.id, user=message.from_user.id)
 
+    # Вход в рыночное меню: установка состояния StockMarketState.InStockMarket
+    await StockMarketState.InStockMarket.set()
+
+    # Отправка сообщения о рынке и кнопок
     market_status = await invest_engine.get_market_info()
-
     keyboard = InlineKeyboardMarkup()
     for company in market_status["data_companies"]:
-        # Создайте кнопку, внутри которой будет информация о компании
         button_text = f"{company[0]}"
-        company_info_button = InlineKeyboardButton(text=button_text, callback_data=f"{company[0]}")
-
-        # Добавьте кнопку в объект InlineKeyboardMarkup
+        company_info_button = InlineKeyboardButton(text=button_text, callback_data=f"company_{company[0]}")
         keyboard.add(company_info_button)
 
     sent_message = await bot.send_message(
         message.from_user.id, template_stock_market_message(market_status['text_info']),
         reply_markup=keyboard, parse_mode='HTML')
 
-    if work_status is not True:
-        USER_STATE[work_status] = True
-        await asyncio.sleep(invest_engine.price_update_interval)
 
-        while True:
-            await asyncio.sleep(invest_engine.price_update_interval)
+# Обработчик для кнопок с компаниями
+@dp.callback_query_handler(lambda callback_query: callback_query.data.startswith("company_"), state=StockMarketState.InStockMarket)
+async def handle_company_info(callback_query: types.CallbackQuery, state: FSMContext):
+    # Извлечение названия компании
+    company_name = callback_query.data.split("_")[1]
 
-            market_inform = await invest_engine.get_market_info()
-            print('//// market_info:', market_inform)
+    # Отправка информации о компании и клавиатуры
+    company_keyboard = InlineKeyboardMarkup()
+    buy_button = InlineKeyboardButton("Купить", callback_data=f"buy_{company_name}")
+    sell_button = InlineKeyboardButton("Продать", callback_data=f"sell_{company_name}")
+    company_keyboard.add(buy_button, sell_button)
 
-            try:
-                await update_message(sent_message, template_stock_market_message(market_inform['text_info']), keyboard)
-            except Exception:
-                pass
+    await bot.send_message(
+        callback_query.from_user.id,
+        f"Информация о компании {company_name}\n\n",
+        reply_markup=company_keyboard,
+    )
 
-            await state.update_data(sent_message_id=sent_message.message_id)
+
+# Далее обработчики для кнопок "Купить" и "Продать"
+@dp.callback_query_handler(lambda callback_query: callback_query.data.startswith("buy_"), state=StockMarketState.InStockMarket)
+async def handle_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
+    # Извлечение названия компании
+    company_name = callback_query.data.split("_")[1]
+    await bot.send_message(callback_query.from_user.id, f"Сколько хотите купить акций компании {company_name}?")
+    await StockMarketState.WaitingForAmount.set()
 
 
-@dp.message_handler(text='Мои финансы')
-async def stock_market(message: types.Message):
-    pass
+@dp.callback_query_handler(lambda callback_query: callback_query.data.startswith("sell_"), state=StockMarketState.InStockMarket)
+async def handle_sell_button(callback_query: types.CallbackQuery, state: FSMContext):
+    # Извлечение названия компании
+    company_name = callback_query.data.split("_")[1]
+    await bot.send_message(callback_query.from_user.id, f"Сколько хотите продать акций компании {company_name}?")
+
+
+@dp.message_handler(lambda message: not message.text.isdigit(), state=StockMarketState.WaitingForAmount)
+async def handle_invalid_input(message: types.Message):
+    await message.reply("Пожалуйста, введите целое число.")
+    print(message)
+    return
+
+
+@dp.message_handler(lambda message: message.text.isdigit(), state=StockMarketState.WaitingForAmount)
+async def handle_amount_input(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        # Извлекаем название компании из состояния
+        company_name = data['company_name']
+        print(f'\n{company_name}\n')
+
+    # Извлекаем введенное количество акций
+    amount = int(message.text)
+    print(amount)
+
+    # Здесь вы можете добавить логику для записи информации о покупке в БД
+    # Например, записать информацию о покупке акций компании `company_name` в количестве `amount`
+
+    await message.reply(f"Вы успешно купили {amount} акций компании {company_name}.")
+
+    # Завершаем состояние BuyStockState
+    await state.finish()
+
+
+# Отслеживание выхода из рыночного меню
+@dp.message_handler(lambda message: message.text not in {'Фондовый рынок'}, state=StockMarketState.InStockMarket)
+async def exit_stock_market(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    sent_message_id = data.get('sent_message_id')
+
+    if sent_message_id:
+        await bot.delete_message(message.from_user.id, sent_message_id)
+
+    await state.finish()
 
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-
-    # while True:
-    #     asyncio.sleep(invest_engine.price_update_interval)
-    #     market_info = invest_engine.get_market_info()
-    #     print('// market_info:', market_info)
-    #
-    #     asyncio.run(stock_exchange_task)
