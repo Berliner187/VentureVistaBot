@@ -1,32 +1,20 @@
 #!/usr/bin/env python3
 import json
 import os
-from datetime import time
-from csv import DictWriter, DictReader
-import datetime
-import re
+import time
 
-
-import asyncio
-import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.dispatcher.filters.state import StatesGroup, State
-from aiogram.types import InputFile
 from aiogram import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.dispatcher import FSMContext
-from aiogram.types import ContentType
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-import numpy as np
-from aiogram.types import CallbackQuery
 
-import schedule
-
-import invest_engine
+import stock_manager
 import private.manage_users as manage_users
 
 
-__version__ = '0.0.1.0'
+__version__ = '0.0.1.1'
 
 
 os.system('clear')
@@ -149,47 +137,80 @@ def template_stock_market_message(_market_status):
     return f"<b>ФОНДОВЫЙ РЫНОК</b>\n\n{_market_status}"
 
 
-USER_STATE = {}
-work_status = "work_status"
+LAST_MESSAGE_STOCK_EX_BOT, LAST_MESSAGE_STOCK_EX_USER = {}, {}
+
+
+# МЕХАНИЗМ УДАЛЕНИЯ СООБЩЕНИЯ (ИМИТАЦИЯ МЕНЮ)
+async def delete_messages(message):
+    try:
+        if LAST_MESSAGE_STOCK_EX_USER.get(message.from_user.id):
+            await bot.delete_message(message.chat.id, LAST_MESSAGE_STOCK_EX_USER[message.from_user.id])
+        if LAST_MESSAGE_STOCK_EX_BOT.get(message.from_user.id):
+            await bot.delete_message(message.chat.id, LAST_MESSAGE_STOCK_EX_BOT[message.from_user.id])
+    except Exception:
+        pass
+
+
+async def drop_message(message: types.Message, sent_message):
+    LAST_MESSAGE_STOCK_EX_USER[message.from_user.id] = sent_message.message_id
+    LAST_MESSAGE_STOCK_EX_BOT[message.from_user.id] = message.message_id
+
+
+# Декоратор для измерения времени выполнения
+def timing_decorator(func):
+    async def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = await func(*args, **kwargs)
+        end_time = time.time()
+        print(f"{func.__name__} выполнилась за {end_time - start_time} секунд")
+        return result
+    return wrapper
 
 
 @dp.message_handler(text='Фондовый рынок')
 async def stock_market_start(message: types.Message):
-    state = dp.current_state(chat=message.chat.id, user=message.from_user.id)
-
-    # Вход в рыночное меню: установка состояния StockMarketState.InStockMarket
-    await StockMarketState.InStockMarket.set()
+    await delete_messages(message)
 
     # Отправка сообщения о рынке и кнопок
-    market_status = await invest_engine.get_market_info()
+    market_status = await stock_manager.get_stock_exchange_info()
     keyboard = InlineKeyboardMarkup()
+    print(market_status["data_companies"])
+
+    # response_of_indicators = await stock_manager.get_stock_exchange_info()
+
+    # Формирование кнопок
     for company in market_status["data_companies"]:
-        button_text = f"{company[0]}"
-        company_info_button = InlineKeyboardButton(text=button_text, callback_data=f"company_{company[0]}")
+        company_info_button = InlineKeyboardButton(text=company, callback_data=f"company_{company}")
         keyboard.add(company_info_button)
 
     sent_message = await bot.send_message(
         message.from_user.id, template_stock_market_message(market_status['text_info']),
         reply_markup=keyboard, parse_mode='HTML')
 
+    await drop_message(message, sent_message)
+
 
 # Обработчик для кнопок с компаниями
-@dp.callback_query_handler(lambda callback_query: callback_query.data.startswith("company_"), state=StockMarketState.InStockMarket)
-async def handle_company_info(callback_query: types.CallbackQuery, state: FSMContext):
-    # Извлечение названия компании
-    company_name = callback_query.data.split("_")[1]
+def get_company_info_text(selected_company):
+    return f"<b>{selected_company}</b>\n\n" \
+           f""
 
-    # Отправка информации о компании и клавиатуры
-    company_keyboard = InlineKeyboardMarkup()
-    buy_button = InlineKeyboardButton("Купить", callback_data=f"buy_{company_name}")
-    sell_button = InlineKeyboardButton("Продать", callback_data=f"sell_{company_name}")
-    company_keyboard.add(buy_button, sell_button)
+
+# Обработка нажатия на кнопку
+@dp.callback_query_handler(lambda callback: callback.data.startswith('company_'))
+async def process_company_button(callback_query: types.CallbackQuery):
+    selected_company = callback_query.data.split('_')[1]
+    print(selected_company)
+
+    new_message_text = get_company_info_text(selected_company)
 
     await bot.send_message(
         callback_query.from_user.id,
-        f"Информация о компании {company_name}\n\n",
-        reply_markup=company_keyboard,
+        new_message_text,
+        parse_mode='HTML'
     )
+
+    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
 
 
 # Далее обработчики для кнопок "Купить" и "Продать"
@@ -232,18 +253,6 @@ async def handle_amount_input(message: types.Message, state: FSMContext):
     await message.reply(f"Вы успешно купили {amount} акций компании {company_name}.")
 
     # Завершаем состояние BuyStockState
-    await state.finish()
-
-
-# Отслеживание выхода из рыночного меню
-@dp.message_handler(lambda message: message.text not in {'Фондовый рынок'}, state=StockMarketState.InStockMarket)
-async def exit_stock_market(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    sent_message_id = data.get('sent_message_id')
-
-    if sent_message_id:
-        await bot.delete_message(message.from_user.id, sent_message_id)
-
     await state.finish()
 
 
