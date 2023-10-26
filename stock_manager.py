@@ -15,7 +15,7 @@ from flask import Flask, jsonify
 from public.manage_companies import Company
 
 
-__version__ = '0.0.2.0'
+__version__ = '0.0.2.1'
 
 
 # Инициализация и настройка базы данных
@@ -35,18 +35,19 @@ class CompanyHistory(Base):
     name = Column(String(50))
     current_price = Column(Float)
     time_update = Column(String(20))
+    currency = Column(String(10))
 
-    def __init__(self, ticker, name, current_price, time_update):
+    def __init__(self, ticker, name, current_price, currency, time_update):
         self.ticker = ticker
         self.name = name
         self.current_price = current_price
+        self.currency = currency
         self.time_update = time_update
 
 
 price_update_interval = 5
 
 
-START_COMPANY_PRICES = {}
 COMPANY_PRICES = {}
 
 
@@ -71,6 +72,18 @@ def indicators_of_stocks():
     pass
 
 
+def format_timedelta(td):
+    days, seconds = td.days, td.seconds
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    if days == 0:
+        return f"{hours} ч, {minutes} мин"
+    elif days < 0:
+        return f"{hours} ч, {minutes} мин"
+    else:
+        return f"{days} день, {hours}:{minutes}"
+
+
 # Функция для обновления цены компании
 def update_company_price(session, ticker, max_price_change):
     company = session.query(Company).filter_by(ticker=ticker).first()
@@ -85,6 +98,7 @@ def update_company_price(session, ticker, max_price_change):
             ticker=ticker,
             name=company.name,
             current_price=company.current_price,
+            currency='RST',
             time_update=format_time(datetime.now(moscow_tz))
         )
 
@@ -94,8 +108,6 @@ def update_company_price(session, ticker, max_price_change):
 
 # Создание БД
 Base.metadata.create_all(engine)
-
-# manage_companies.add_new_company(session, 'TSLA', 'Tesla', 700, 'An innovative company specializing in electric cars and energy solutions', 'Automotive and Energy', 'Palo Alto, California, USA')
 
 
 # Работа биржи. Тут формируются цены
@@ -108,6 +120,8 @@ def work_of_the_stock_exchange():
     code = 200
 
     while True:
+        companies_from_db = session.query(Company).all()
+
         if start_time <= time_now <= end_time:
             tickers = session.query(Company.ticker).all()
             companies_from_db = session.query(Company).all()
@@ -125,6 +139,7 @@ def work_of_the_stock_exchange():
                     COMPANY_PRICES[company_name] = {}  # Создать пустой словарь для компании
                     COMPANY_PRICES[company_name]["day_min"] = company.current_price
                     COMPANY_PRICES[company_name]["day_max"] = company.current_price
+                    COMPANY_PRICES[company_name]["day_start_price"] = company.current_price
 
                 COMPANY_PRICES[company_name]["price"] = company.current_price
 
@@ -139,21 +154,11 @@ def work_of_the_stock_exchange():
             return code
         else:
             print(f'\n/-/ STOCK EXCHANGE {formatted_time} /NOT WORK/')
-            code = 404
+            code = 202
             COMPANY_PRICES["options"] = {'last_update': last_update_price, 'status': code}
+            for company in companies_from_db:
+                COMPANY_PRICES[company.name]["day_start_price"] = 0
             return code
-
-
-def format_timedelta(td):
-    days, seconds = td.days, td.seconds
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    if days == 0:
-        return f"{hours} ч, {minutes} мин"
-    elif days < 0:
-        return f"{hours} ч, {minutes} мин"
-    else:
-        return f"{days} день, {hours}:{minutes}"
 
 
 async def get_actual_prices():
@@ -173,8 +178,6 @@ async def get_stock_exchange_info():
 
     if start_time <= current_time <= end_time:
         # Получаем информацию обо всех компаниях
-        # all_companies = session.query(Company).all()
-
         response = ''
         # Выводим информацию о каждой компании
         companies_indicators = await get_actual_prices()

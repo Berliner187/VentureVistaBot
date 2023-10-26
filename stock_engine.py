@@ -7,9 +7,12 @@ app = Flask(__name__)
 scheduler = BackgroundScheduler()
 
 
+__version__ = '0.0.0.1'
+
+
 if __name__ == '__main__':
     global COMPANY_PRICES
-    scheduler.add_job(work_of_the_stock_exchange, 'interval', seconds=5)
+    scheduler.add_job(work_of_the_stock_exchange, 'interval', seconds=3)
     scheduler.start()
 
     @app.route('/data', methods=['GET'])

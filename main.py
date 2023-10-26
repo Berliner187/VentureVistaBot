@@ -9,12 +9,16 @@ from aiogram import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from sqlalchemy import create_engine, Column, Integer, String, Float, Sequence
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
 import stock_manager
 import private.manage_users as manage_users
+import public.manage_companies as manage_companies
 
 
-__version__ = '0.0.1.1'
+__version__ = '0.0.2.0'
 
 
 os.system('clear')
@@ -54,6 +58,24 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 
 
 # ============================================================================
+# ======================== БАЗЫ ДАННЫХ =====================
+# ------------------------- КОМПАНИИ -----------------------
+engine = create_engine(f'sqlite:///companies.db', echo=False)
+Base = declarative_base()
+
+Session = sessionmaker(bind=engine)
+session_companies = Session()
+
+# ------------------ ПОЛЬЗОВАТЕЛИ -----------------
+# Инициализация и настройка базы данных
+engine_users = create_engine(f'sqlite:///private/users.db', echo=False)
+DataBaseUsers = declarative_base()
+
+SessionUsers = sessionmaker(bind=engine_users)
+session_users = SessionUsers()
+
+
+# ============================================================================
 # ------------------------- ПОЛЬЗОВАТЕЛЬСКИЕ КОМАНДЫ -------------------------
 @dp.message_handler(commands=['start'])
 async def start_message(message: types.Message):
@@ -68,21 +90,18 @@ async def start_message(message: types.Message):
     last_name = message.from_user.last_name
     username = message.from_user.username
 
-    print(user_id, first_name, last_name, username)
-    manage_users.check_user_in_db(user_id=user_id, first_name=first_name, last_name=last_name, username=username)
+    # manage_users.check_user_in_db(user_id=user_id, first_name=first_name, last_name=last_name, username=username)
 
     kb = [
         [
-            types.KeyboardButton(text="Фондовый рынок"),
+            types.KeyboardButton(text="📈Фондовый рынок"),
         ],
         [
-            types.KeyboardButton(text="Мой портфель"),
-            types.KeyboardButton(text="Мои финансы")
+            types.KeyboardButton(text="👛Бумажник"),
+            types.KeyboardButton(text="💼Портфель")
         ]
     ]
     keyboard = types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
-    # await bot.send_photo(
-    #     message.from_user.id, photo=InputFile('img/menu.png', filename='start_message.png'), reply_markup=keyboard)
     await wait_message.delete()
 
     url_kb = InlineKeyboardMarkup(row_width=3)
@@ -93,19 +112,37 @@ async def start_message(message: types.Message):
 
     await message.answer(
         "<b>Venture</b> <i>Vista</i>.\n\n",
-        reply_markup=url_kb, parse_mode='HTML')
+        reply_markup=keyboard, parse_mode='HTML')
+
+    existing_user = session_users.query(manage_users.User).filter_by(user_id=user_id).first()
+
+    if existing_user is not None:
+        pass
+    else:
+        print(f"/// NEW USER: {user_id} ///")
+        new_user = manage_users.User(user_id=user_id, first_name=first_name, last_name=last_name, username=username)
+        personal_account = manage_users.PersonalAccount(user_id, 1000, 'RST', 'Bonus')
+        session_users.add(new_user)
+        session_users.add(personal_account)
+        session_users.commit()
+
+        await message.answer(
+            f"<b>Ваш счёт пополнен на {AVAILABLE_CURRENCY['RST']}1,000 ✅</b>.\n\n"
+            f"Начните торговать прямо сейчас!",
+            reply_markup=keyboard, parse_mode='HTML')
 
 
-@dp.message_handler(text='Главная')
+@dp.message_handler(text='🏠Главная')
 @dp.message_handler(commands=['menu'])
 async def main_func(message: types.Message):
     btn = [
         [
-            types.KeyboardButton(text="Мои финансы"),
-            types.KeyboardButton(text="Фондовый рынок")
+            types.KeyboardButton(text="📈Фондовый рынок")
         ],
         [
-            types.KeyboardButton(text="Главная")
+            types.KeyboardButton(text="🏠Главная"),
+            types.KeyboardButton(text="👛Бумажник"),
+            types.KeyboardButton(text="💼Портфель"),
         ]
     ]
 
@@ -119,14 +156,11 @@ class StockMarketState(StatesGroup):
     InStockMarket = State()  # Состояние, когда пользователь находится в разделе Фондовый рынок
     SentMessageId = State()  # Состояние для хранения ID отправленного сообщения
     WaitingForAmount = State()
+    ConfirmPurchase = State()
 
 
 class CompanyInfoState(StatesGroup):
     ChoosingCompany = State()   # Состояние, когда пользователь находится в разделе О компании
-
-
-class StateWorkStockExchange(StatesGroup):
-    pass
 
 
 async def update_message(message: types.Message, new_text: str, keyboard):
@@ -134,7 +168,13 @@ async def update_message(message: types.Message, new_text: str, keyboard):
 
 
 def template_stock_market_message(_market_status):
-    return f"<b>ФОНДОВЫЙ РЫНОК</b>\n\n{_market_status}"
+    return f"<b>📈 ФОНДОВЫЙ РЫНОК 📈</b>\n\n{_market_status}"
+
+
+# ------- КОНСТАНТЫ -----------
+AVAILABLE_CURRENCY = {
+    "RST": "Σ"
+}
 
 
 LAST_MESSAGE_STOCK_EX_BOT, LAST_MESSAGE_STOCK_EX_USER = {}, {}
@@ -167,18 +207,15 @@ def timing_decorator(func):
     return wrapper
 
 
-@dp.message_handler(text='Фондовый рынок')
-async def stock_market_start(message: types.Message):
+@dp.message_handler(text='📈Фондовый рынок')
+async def stock_market_main(message: types.Message):
     await delete_messages(message)
 
     # Отправка сообщения о рынке и кнопок
     market_status = await stock_manager.get_stock_exchange_info()
     keyboard = InlineKeyboardMarkup()
-    print(market_status["data_companies"])
 
-    # response_of_indicators = await stock_manager.get_stock_exchange_info()
-
-    # Формирование кнопок
+    # Формирование кнопок с компаниями
     for company in market_status["data_companies"]:
         company_info_button = InlineKeyboardButton(text=company, callback_data=f"company_{company}")
         keyboard.add(company_info_button)
@@ -190,70 +227,143 @@ async def stock_market_start(message: types.Message):
     await drop_message(message, sent_message)
 
 
-# Обработчик для кнопок с компаниями
-def get_company_info_text(selected_company):
-    return f"<b>{selected_company}</b>\n\n" \
-           f""
-
-
 # Обработка нажатия на кнопку
 @dp.callback_query_handler(lambda callback: callback.data.startswith('company_'))
 async def process_company_button(callback_query: types.CallbackQuery):
-    selected_company = callback_query.data.split('_')[1]
-    print(selected_company)
+    market_prices = await stock_manager.get_actual_prices()
 
-    new_message_text = get_company_info_text(selected_company)
+    selected_company = callback_query.data.split('_')[1]
+
+    company = session_companies.query(manage_companies.Company).filter_by(name=selected_company).first()
+    description = company.description
+    current_price = company.current_price
+
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    buy_button = InlineKeyboardButton(text="Купить", callback_data=f"buy_{selected_company}")
+    sell_button = InlineKeyboardButton(text="Продать", callback_data=f"sell_{selected_company}")
+    # back_btn = InlineKeyboardButton(text='⬅️ Назад', callback_data='Фондовый рынок')
+    keyboard.add(buy_button, sell_button)
+
+    current_price = round(current_price, 2)
+    day_max = round(market_prices[selected_company]['day_max'], 2)
+    day_min = round(market_prices[selected_company]['day_min'], 2)
+
+    day_start_price = market_prices[selected_company]['day_start_price']
+    delta_day_start_price = round(current_price - day_start_price, 2)
+    delta_day_start_price_percent = round(100 - day_start_price * 100 / current_price, 2)
+
+    indicators = ''
+    if delta_day_start_price > 0:
+        indicators += f'+{delta_day_start_price}🟩  (+{delta_day_start_price_percent}%)'
+    elif delta_day_start_price == 0:
+        indicators += f'{delta_day_start_price}🟨  ({delta_day_start_price_percent}%)'
+    else:
+        indicators += f'{delta_day_start_price}🟥  ({delta_day_start_price_percent}%)'
 
     await bot.send_message(
-        callback_query.from_user.id,
-        new_message_text,
-        parse_mode='HTML'
-    )
+            callback_query.from_user.id,
+            f"<b>О компании {selected_company}</b>\n\n"
+            f"{description}\n\n"
+            f"<b>{current_price}</b>  {indicators}\n"
+            f"{day_max}⬆️  {day_min}⬇️",
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
 
     await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
 
 
-# Далее обработчики для кнопок "Купить" и "Продать"
-@dp.callback_query_handler(lambda callback_query: callback_query.data.startswith("buy_"), state=StockMarketState.InStockMarket)
-async def handle_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
-    # Извлечение названия компании
-    company_name = callback_query.data.split("_")[1]
-    await bot.send_message(callback_query.from_user.id, f"Сколько хотите купить акций компании {company_name}?")
+SELECTED_COMPANY = {}
+
+
+# Обработчик кнопки "Купить"
+@dp.callback_query_handler(lambda callback_query: callback_query.data.startswith("buy_"))
+async def process_buy_button(callback_query: types.CallbackQuery):
+    btn = [
+        [
+            types.KeyboardButton(text="📈Фондовый рынок")
+        ],
+        [
+            types.KeyboardButton(text="🏠Главная"),
+            types.KeyboardButton(text="💼Портфель"),
+            types.KeyboardButton(text="👛Бумажник"),
+        ]
+    ]
+    keyboard = types.ReplyKeyboardMarkup(keyboard=btn, resize_keyboard=True, one_time_keyboard=True)
+
+    selected_company = callback_query.data.split("_")[1]
+    # Выбранная пользователем компания временно хранится здесь
+    SELECTED_COMPANY[callback_query.from_user.id] = selected_company
+
+    await bot.send_message(
+        callback_query.from_user.id,
+        f"Сколько акций {selected_company} вы хотите купить?",
+        reply_markup=keyboard, parse_mode='HTML'
+    )
     await StockMarketState.WaitingForAmount.set()
 
 
-@dp.callback_query_handler(lambda callback_query: callback_query.data.startswith("sell_"), state=StockMarketState.InStockMarket)
-async def handle_sell_button(callback_query: types.CallbackQuery, state: FSMContext):
-    # Извлечение названия компании
-    company_name = callback_query.data.split("_")[1]
-    await bot.send_message(callback_query.from_user.id, f"Сколько хотите продать акций компании {company_name}?")
+@dp.message_handler(state=StockMarketState.WaitingForAmount)
+async def process_amount_input(message: types.Message, state: FSMContext):
+    try:
+        # count - он же quantity - означает количество
+        company = session_companies.query(manage_companies.Company).filter_by(name=SELECTED_COMPANY[message.from_user.id]).first()
+        current_price = company.current_price
+        ticker = company.ticker
+
+        quantity = int(message.text)
+        message_user_id = message.from_user.id
+
+        personal_account = session_users.query(manage_users.PersonalAccount).filter_by(user_id=message_user_id).first()
+        currency = personal_account.currency
+
+        if personal_account.balance >= current_price * quantity:
+            personal_account.balance -= current_price * quantity
+
+            exist_company = session_users.query(manage_users.Portfolio).filter_by(ticker=ticker).first()
+
+            if exist_company:
+                print('///// ПОПАЛ ////////')
+                # TODO: Обновить существующие данные
+                average_price = round(exist_company.purchase_amount * exist_company.count) + (current_price * quantity)
+                exist_company.count += quantity
+                exist_company.purchase_amount = average_price
+            else:
+                new_transaction = manage_users.Portfolio(message_user_id, 'buy', ticker, current_price, quantity, 'RST')
+                session_users.add(new_transaction)
+
+            session_users.commit()
+
+            await message.answer(
+                f"<b>Успешно ✅</b>\n\nВы приобрели акции компании {company.name}\n\n"
+                f"<i>Количество: {quantity}</i>\n"
+                f"<i>Сумма: {round(current_price * quantity, 2)} {AVAILABLE_CURRENCY[currency]}</i>\n\n"
+                f"Доступно: {round(personal_account.balance, 2)} {AVAILABLE_CURRENCY[currency]}",
+                parse_mode='HTML'
+            )
+        else:
+            await message.answer(
+                f"<b>Недостаточно средств 🚫</b>\n\nВыполнить операцию невозможно.\n\n"
+                f"Доступно: {round(personal_account.balance, 2)} {AVAILABLE_CURRENCY[currency]}",
+                parse_mode='HTML'
+            )
+
+        await state.finish()
+        SELECTED_COMPANY[message.from_user.id] = None
+    except ValueError:
+        await message.answer("Введите корректное количество акций.")
 
 
-@dp.message_handler(lambda message: not message.text.isdigit(), state=StockMarketState.WaitingForAmount)
-async def handle_invalid_input(message: types.Message):
-    await message.reply("Пожалуйста, введите целое число.")
-    print(message)
-    return
+@dp.message_handler(text='💼Портфель')
+async def process_buy_button(message: types.Message):
+    personal_account = session_users.query(manage_users.Portfolio).filter_by(user_id=message.from_user.id)
+    print(personal_account)
+    # personal_account
 
 
-@dp.message_handler(lambda message: message.text.isdigit(), state=StockMarketState.WaitingForAmount)
-async def handle_amount_input(message: types.Message, state: FSMContext):
-    async with state.proxy() as data:
-        # Извлекаем название компании из состояния
-        company_name = data['company_name']
-        print(f'\n{company_name}\n')
-
-    # Извлекаем введенное количество акций
-    amount = int(message.text)
-    print(amount)
-
-    # Здесь вы можете добавить логику для записи информации о покупке в БД
-    # Например, записать информацию о покупке акций компании `company_name` в количестве `amount`
-
-    await message.reply(f"Вы успешно купили {amount} акций компании {company_name}.")
-
-    # Завершаем состояние BuyStockState
-    await state.finish()
+@dp.message_handler(text='👛Бумажник')
+async def process_buy_button(message: types.Message):
+    pass
 
 
 if __name__ == '__main__':
